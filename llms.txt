@@ -1,0 +1,32 @@
+# revobase
+
+Low-level C++23 utilities for latency-sensitive RevoRacer infrastructure.
+
+## Primary documents
+
+- README: https://github.com/revoracer/revobase/blob/main/README.md
+- License: https://github.com/revoracer/revobase/blob/main/LICENSE
+- Security policy: https://github.com/revoracer/revobase/blob/main/SECURITY.md
+- Contributing: https://github.com/revoracer/revobase/blob/main/CONTRIBUTING.md
+- Agent instructions: https://github.com/revoracer/revobase/blob/main/AGENTS.md
+
+## Source areas
+
+- Public headers: https://github.com/revoracer/revobase/tree/main/include/revobase
+- Tests: https://github.com/revoracer/revobase/tree/main/tests
+- Build script: https://github.com/revoracer/revobase/blob/main/build.sh
+- CMake project: https://github.com/revoracer/revobase/blob/main/CMakeLists.txt
+
+## Integration notes
+
+- Requires CMake 3.23 or newer and a C++23 Clang/GCC-compatible compiler.
+- Supports Linux and macOS; Windows/MSVC is not implemented.
+- Link CMake target `revobase::revobase`.
+- Initialize submodules before building.
+- Core mmap API: `revobase::os::MmapBuffer`.
+- Core timing API: `revobase::TscTimer` and `revobase::Timestamp`.
+- Host-tuning APIs: `revobase::system::CpuAffinity` and
+  `revobase::system::RealtimePriority`.
+- Fixed-scale decimal helpers: `parse_decimal_parts`,
+  `decimal_string_to_fixed`, and related functions in `DecimalUtils.h`.
+- `revobase` is not a transport, broker, journal, or agent framework.
