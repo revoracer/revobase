@@ -98,20 +98,17 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
     }
 #endif
   }
-
   // Setup mmap flags
   int prot = is_writing ? (PROT_READ | PROT_WRITE) : PROT_READ;
   int flags = MAP_SHARED;
-
   if (prefault) {
 #if IS_LINUX
-    // Prefault all pages immediately (critical for HFT)
+    // Prefault all pages immediately as best-effort
     flags |= MAP_POPULATE;
 #endif
     // hugetlbfs-backed files get explicit huge pages from the filesystem.
     // Ordinary files stay on the regular-page path and may be promoted by THP.
   }
-
   void *buffer = mmap(nullptr, size, prot, flags, fd, 0);
   int err = errno;
   close(fd); // Close fd immediately after mmap
@@ -151,8 +148,7 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
                    strerror(errno));
     }
 #endif
-
-    // Lock pages in RAM to prevent swapping (critical for HFT)
+    // Lock pages in RAM to prevent swapping
     if (mlock(buffer, size) != 0) {
       int lock_err = errno;
 #if IS_LINUX
