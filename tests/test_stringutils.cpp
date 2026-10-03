@@ -1,4 +1,3 @@
-#include "StringUtils.hpp"
 #include <array>
 #include <catch2/benchmark/catch_benchmark.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -8,6 +7,8 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+#include <revobase/StringUtils.hpp>
 
 using namespace revobase;
 

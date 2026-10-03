@@ -1,10 +1,11 @@
-#include "MmapBuffer.h"
 #include <catch2/benchmark/catch_benchmark.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <filesystem>
 #include <thread>
+
+#include <revobase/MmapBuffer.h>
 
 using namespace revobase::os;
 namespace fs = std::filesystem;
@@ -148,8 +149,8 @@ TEST_CASE_METHOD(PerfTestFixture, "IPC throughput",
       ring->write_pos.store(0);
       ring->read_pos.store(0);
 
-      constexpr int num_messages = 1000000;
-      constexpr std::size_t msg_size = 64;
+      const int num_messages = 1000000;
+      const std::size_t msg_size = 64;
 
       // Producer
       std::thread producer([ring]() {

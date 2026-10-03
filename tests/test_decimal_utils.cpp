@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "DecimalUtils.h"
+#include <revobase/DecimalUtils.h>
 
 #include <cstdint>
 #include <limits>
@@ -95,6 +95,10 @@ TEST_CASE("DecimalUtils converts decimal strings to fixed scale", "[decimal]") {
   requires_fixed("1000", 8, 100'000'000'000);
 }
 
+// ===========================================================================
+// Boundary behaviour.
+// ===========================================================================
+
 TEST_CASE("DecimalUtils accepts the full int64 range", "[decimal][boundary]") {
   SECTION("18 digits is always safe for the accumulator") {
     const auto d = parse_decimal_parts("999999999999999999");
@@ -109,6 +113,8 @@ TEST_CASE("DecimalUtils accepts the full int64 range", "[decimal][boundary]") {
   }
 
   SECTION("Binance advertises its limits at exactly INT64_MAX") {
+    // maxPrice / maxQty in exchangeInfo are INT64_MAX at scale 8. This must
+    // round-trip exactly: it is the widest legal value on the wire.
     requires_fixed("92233720368.54775807", 8, kI64Max);
   }
 
@@ -181,6 +187,7 @@ TEST_CASE("DecimalUtils only narrows when it is lossless",
 
 TEST_CASE("DecimalUtils rejects malformed input", "[decimal][boundary]") {
   SECTION("Second decimal point") {
+    // Was silently accepted as 1.23.
     REQUIRE_FALSE(parse_decimal_parts("1.2.3").ok);
     requires_rejected("1.2.3", 8);
   }

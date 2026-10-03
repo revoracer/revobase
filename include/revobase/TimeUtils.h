@@ -45,7 +45,7 @@ public:
   }
 
   static constexpr Timestamp MAX_TIME() noexcept {
-    return Timestamp(+4102444800000000000L);
+    return Timestamp(+4102444800000000000L); // 2100-01-01
   }
 
   [[nodiscard]] constexpr bool isValid() const noexcept { return nsec_ >= 0; }
@@ -83,6 +83,12 @@ static_assert(std::is_trivially_copyable_v<Timestamp>);
 static_assert(std::is_trivially_destructible_v<Timestamp>);
 static_assert(sizeof(Timestamp) == 8, "sizeof(Timestamp) != 8");
 
+// Timestamp arithmetic uses std::chrono::nanoseconds as its duration type.
+// A duration here is a plain scalar count with none of Timestamp's wire-format
+// or sentinel obligations, so a bespoke type had nothing to add over the
+// standard one — and it cost something real: collapsing every unit to
+// nanoseconds at construction discards the unit safety that keeps
+// milliseconds and nanoseconds distinct types with explicit lossy conversions.
 inline Timestamp operator+(const Timestamp &lhs,
                            std::chrono::nanoseconds rhs) noexcept {
   return Timestamp(lhs.nsec() + rhs.count());
@@ -111,7 +117,7 @@ inline std::chrono::nanoseconds operator-(const Timestamp &lhs,
 }
 
 inline constexpr Timestamp MAX_TIME = Timestamp::MAX_TIME();
-}
+} // namespace revobase
 
 namespace std {
 template <> struct hash<revobase::Timestamp> {
@@ -119,7 +125,7 @@ template <> struct hash<revobase::Timestamp> {
     return hash<std::int64_t>()(t.nsec());
   }
 };
-}
+} // namespace std
 
 template <> struct fmt::formatter<revobase::Timestamp> {
   template <typename ParseContext> constexpr auto parse(ParseContext &ctx) {

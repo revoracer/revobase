@@ -1,7 +1,6 @@
-#include "FileUtils.h"
+#include <revobase/FileUtils.h>
 
 #include <catch2/catch_test_macros.hpp>
-#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -24,7 +23,7 @@ class TempTree {
 public:
   TempTree() {
     root_ = fs::temp_directory_path() /
-            fs::path("racer_fileutils_test_" + std::to_string(::getpid()) +
+            fs::path("revobase_fileutils_test_" + std::to_string(::getpid()) +
                      "_" + std::to_string(counter_++));
     fs::create_directories(root_);
   }
@@ -124,6 +123,9 @@ TEST_CASE("FileUtils::mkDir / exists / touch", "[fileutils]") {
   REQUIRE(FileUtils::exists(file));
   REQUIRE(fs::is_regular_file(file));
 
+  // touch() must NOT truncate. The natural spelling (a default ofstream)
+  // implies ios::trunc and would silently empty the file; every caller uses
+  // this as "make sure this exists", so that would be data loss.
   std::ofstream(file) << "some content";
   const auto size_before = fs::file_size(file);
   REQUIRE(size_before > 0);
@@ -135,6 +137,9 @@ TEST_CASE("FileUtils::mkDir / exists / touch", "[fileutils]") {
   std::getline(check, contents);
   REQUIRE(contents == "some content");
 
+  // it does restamp mtime, like touch(1). Backdate first rather than
+  // sleeping: filesystem timestamp granularity would otherwise make a
+  // just-written file indistinguishable from a just-touched one.
   const auto backdated =
       fs::last_write_time(file) - std::chrono::hours(24);
   fs::last_write_time(file, backdated);
@@ -148,34 +153,33 @@ TEST_CASE("FileUtils::mkDir / exists / touch", "[fileutils]") {
   REQUIRE_FALSE(FileUtils::touch(tmp / "missing_parent" / "f.txt"));
 }
 
-TEST_CASE("FileUtils::loadConfig rejects non-files", "[fileutils]") {
+TEST_CASE("FileUtils::loadJsonFile rejects non-files", "[fileutils]") {
   TempTree tmp;
-
-  REQUIRE_THROWS_AS(FileUtils::loadConfig(tmp / "absent.json"),
+  REQUIRE_THROWS_AS(FileUtils::loadJsonFile(tmp / "absent.json"),
                     std::runtime_error);
   // A directory exists but is not a regular file - must throw, not try to
   // parse it.
-  REQUIRE_THROWS_AS(FileUtils::loadConfig(tmp.root()), std::runtime_error);
+  REQUIRE_THROWS_AS(FileUtils::loadJsonFile(tmp.root()), std::runtime_error);
 }
 
-TEST_CASE("FileUtils::loadConfig parsing rules", "[fileutils]") {
+TEST_CASE("FileUtils::loadJsonFile parsing rules", "[fileutils]") {
   TempTree tmp;
 
   SECTION("plain object") {
     fs::path p = tmp.writeFile("ok.json", R"({"a": 1, "b": [2, 3]})");
-    auto j = FileUtils::loadConfig(p);
+    auto j = FileUtils::loadJsonFile(p);
     REQUIRE(j["a"].get<int>() == 1);
     REQUIRE(j["b"].size() == 2);
   }
 
   SECTION("comments are accepted") {
-    // loadConfig passes ignore_comments=true, which is why the checked-in
+    // loadJsonFile passes ignore_comments=true, which is why the checked-in
     // configs/*.json are allowed to carry // annotations.
     fs::path p = tmp.writeFile("comments.json", R"({
       // leading comment
       "a": 1, /* inline */ "b": 2
     })");
-    auto j = FileUtils::loadConfig(p);
+    auto j = FileUtils::loadJsonFile(p);
     REQUIRE(j["a"].get<int>() == 1);
     REQUIRE(j["b"].get<int>() == 2);
   }
@@ -184,17 +188,17 @@ TEST_CASE("FileUtils::loadConfig parsing rules", "[fileutils]") {
     // ignore_trailing_commas=false: a stray comma is a config error, not
     // something to silently accept.
     fs::path p = tmp.writeFile("trailing.json", R"({"a": 1, "b": 2,})");
-    REQUIRE_THROWS_AS(FileUtils::loadConfig(p), nlohmann::json::parse_error);
+    REQUIRE_THROWS_AS(FileUtils::loadJsonFile(p), nlohmann::json::parse_error);
   }
 
   SECTION("malformed json throws") {
     fs::path p = tmp.writeFile("bad.json", R"({"a": )");
-    REQUIRE_THROWS_AS(FileUtils::loadConfig(p), nlohmann::json::parse_error);
+    REQUIRE_THROWS_AS(FileUtils::loadJsonFile(p), nlohmann::json::parse_error);
   }
 
   SECTION("empty file throws") {
     fs::path p = tmp.writeFile("empty.json", "");
-    REQUIRE_THROWS_AS(FileUtils::loadConfig(p), nlohmann::json::parse_error);
+    REQUIRE_THROWS_AS(FileUtils::loadJsonFile(p), nlohmann::json::parse_error);
   }
 }
 
@@ -233,7 +237,7 @@ TEST_CASE("FileUtils::listDirs throws on a missing path", "[fileutils]") {
 }
 
 TEST_CASE("FileUtils env helpers", "[fileutils]") {
-  const char *kName = "RACER_FILEUTILS_TEST_VAR";
+  const char *kName = "REVOBASE_FILEUTILS_TEST_VAR";
   ::unsetenv(kName);
 
   REQUIRE_FALSE(FileUtils::hasEnv(kName));

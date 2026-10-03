@@ -1,17 +1,17 @@
 
-#include "MmapBuffer.h"
 #include <catch2/catch_test_macros.hpp>
 
-#include "TscTimer.h"
 #include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sys/resource.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <spdlog/spdlog.h>
+
+#include <revobase/CpuAffinity.h>
+#include <revobase/MmapBuffer.h>
+#include <revobase/TscTimer.h>
 
 using namespace revobase::os;
 namespace fs = std::filesystem;
@@ -218,11 +218,18 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer lazy vs eager loading",
 
   SECTION("Lazy loading") {
     revobase::TscTimer::calibrate();
-    const auto start = revobase::TscTimer::now_cycles_begin();
-    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, true);
-    const auto end = revobase::TscTimer::now_cycles_end();
+    std::uintptr_t addr = 0;
+    uint64_t start = 0, end = 0;
+    {
+      // Pinned for the whole begin..end window: an unpinned thread can
+      // migrate cores mid-measurement, and now_cycles_begin/end are only
+      // comparable when both reads land on the same core.
+      revobase::system::ScopedCpuPin pin(0);
+      start = revobase::TscTimer::now_cycles_begin();
+      addr = MmapBuffer::loadMmapBuffer(path, size, true, true);
+      end = revobase::TscTimer::now_cycles_end();
+    }
     const auto lazy_duration = revobase::TscTimer::delta_ns(start, end);
-    
     // Lazy should be very fast (< 1ms typically)
     REQUIRE(lazy_duration < 1000 * 1000);
 
@@ -231,9 +238,15 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer lazy vs eager loading",
 
   SECTION("Eager loading (non-lazy)") {
     revobase::TscTimer::calibrate();
-    const auto start = revobase::TscTimer::now_cycles_begin();
-    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
-    const auto end = revobase::TscTimer::now_cycles_end();
+    std::uintptr_t addr = 0;
+    uint64_t start = 0, end = 0;
+    {
+      // See "Lazy loading" above: pinned so begin/end read the same core.
+      revobase::system::ScopedCpuPin pin(0);
+      start = revobase::TscTimer::now_cycles_begin();
+      addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+      end = revobase::TscTimer::now_cycles_end();
+    }
     const auto eager_duration = revobase::TscTimer::delta_ns(start, end);
     // Eager takes longer due to prefaulting
     INFO("Eager loading took " << eager_duration << " nanoseconds");

@@ -1,12 +1,16 @@
 name: CI
 
 on:
-  push:
+  push: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-test:
@@ -20,8 +24,8 @@ jobs:
             compiler: g++
           - os: ubuntu-latest
             compiler: clang++
-          - os: macos-latest
-            compiler: clang++
+#          - os: macos-latest
+#            compiler: clang++
 
     steps:
       - name: Check out

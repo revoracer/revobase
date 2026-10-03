@@ -1,4 +1,6 @@
-#include "logger.h"
+#include <revobase/Logger.h>
+
+#include <spdlog/spdlog.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -12,9 +14,14 @@
 namespace fs = std::filesystem;
 using Catch::Matchers::ContainsSubstring;
 
+// setup() installs a PROCESS-WIDE logger and can only succeed once, so the
+// whole contract lives in a single test case. Splitting it would make the
+// cases order-dependent when the binary is run directly (catch_discover_tests
+// gives each case its own process under ctest, but a bare ./revobase_tests
+// run does not).
 TEST_CASE("logger::setup contract", "[logger]") {
   const fs::path dir = fs::temp_directory_path() /
-                       ("racer_logger_test_" + std::to_string(::getpid()));
+                       ("revobase_logger_test_" + std::to_string(::getpid()));
   fs::create_directories(dir);
   const fs::path log_file = dir / "test.log";
 
@@ -42,14 +49,12 @@ TEST_CASE("logger::setup contract", "[logger]") {
   // dated file. This is the whole point of checking the directory instead.
   REQUIRE_FALSE(fs::exists(log_file));
   REQUIRE_NOTHROW(
-      revobase::logger::setup("racer_test", log_file, spdlog::level::info, false));
-
-  // ...and the path handed in is still never created, only the dated sibling.
+      revobase::logger::setup("revobase_test", log_file, spdlog::level::info, false));
   REQUIRE_FALSE(fs::exists(log_file));
 
   // Second call must be rejected, not silently ignored - a silent no-op would
   // let a caller believe it had installed its own sinks.
-  REQUIRE_THROWS_WITH(revobase::logger::setup("racer_test_again", log_file,
+  REQUIRE_THROWS_WITH(revobase::logger::setup("revobase_test_again", log_file,
                                            spdlog::level::debug, false),
                       ContainsSubstring("already initialized"));
 
@@ -57,14 +62,14 @@ TEST_CASE("logger::setup contract", "[logger]") {
   // call with a bad path reports the useful error rather than blaming the
   // path.
   REQUIRE_THROWS_WITH(revobase::logger::setup(
-                          "racer_test_again", dir / "no_such_subdir" / "a.log",
+                          "revobase_test_again", dir / "no_such_subdir" / "a.log",
                           spdlog::level::debug, false),
                       ContainsSubstring("already initialized"));
 
   // A failed setup must not have swapped the default logger out from under
   // whoever is already logging.
   REQUIRE(spdlog::default_logger() != nullptr);
-  REQUIRE(spdlog::default_logger()->name() == "racer_test");
+  REQUIRE(spdlog::default_logger()->name() == "revobase_test");
 
   SPDLOG_INFO("logger test wrote this line");
   spdlog::default_logger()->flush();

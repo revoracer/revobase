@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 RevoRacer
+// HashUtils.h
 #pragma once
 
 #include <cstdint>
-#include <string>
 #include <string_view>
 
 namespace revobase {
 class HashUtils {
 public:
-
+  // compile-time evaluation
   static constexpr uint32_t fnv1a_32(std::string_view str) noexcept {
     uint32_t hash = 2166136261u;
     for (char c : str) {
@@ -33,6 +33,7 @@ public:
                   static_cast<int32_t>(length), seed);
   }
 
+  // Hash POD structs (useful for order IDs, prices, etc.)
   template <typename T>
   static inline uint32_t hashStruct32(const T &data, uint32_t seed = 0) {
     static_assert(std::is_trivially_copyable_v<T>,
@@ -41,4 +42,4 @@ public:
                   static_cast<int32_t>(sizeof(T)), seed);
   }
 };
-}
+} // namespace revobase

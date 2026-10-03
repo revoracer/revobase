@@ -1,9 +1,10 @@
-#include "MmapBuffer.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <filesystem>
 #include <thread>
 #include <vector>
+
+#include <revobase/MmapBuffer.h>
 
 using namespace revobase::os;
 namespace fs = std::filesystem;
@@ -79,14 +80,14 @@ TEST_CASE_METHOD(StressTestFixture, "MmapBuffer stress tests",
 
   SECTION("Multi-threaded access") {
     const std::string path = getTestPath("multithread.mmap");
-    constexpr std::size_t size = 10 * 1024 * 1024; // 10MB
+    const std::size_t size = 10 * 1024 * 1024; // 10MB
 
     std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
     std::atomic<int> *counters = reinterpret_cast<std::atomic<int> *>(addr);
 
-    constexpr int num_counters = size / sizeof(std::atomic<int>);
-    constexpr int num_threads = 8;
-    constexpr int increments_per_thread = 10000;
+    const int num_counters = size / sizeof(std::atomic<int>);
+    const int num_threads = 8;
+    const int increments_per_thread = 10000;
 
     // Initialize counters
     for (int i = 0; i < num_counters; i++) {

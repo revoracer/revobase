@@ -6,14 +6,12 @@
 #include <fstream>
 #include <pthread.h>
 #include <sched.h>
-#include <spdlog/spdlog.h>
 #include <sstream>
 #include <thread>
 #include <vector>
 
+#include <spdlog/spdlog.h>
 #ifdef __linux__
-#include <sys/syscall.h>
-#include <unistd.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_init.h>
@@ -25,7 +23,12 @@ namespace revobase::system {
 
 class CpuAffinity {
 public:
-
+  // The verify step is not belt-and-braces: setting an affinity mask expresses
+  // a constraint, and a caller that treats a successful syscall as "I am on
+  // core N" can silently mis-attribute a whole measurement run - or leave a hot
+  // thread off its isolated core - with nothing in the logs. Linux migrates a
+  // running task synchronously when its current CPU leaves the mask, so
+  // sched_getcpu() is already authoritative on return; no sleep is needed.
   static bool pinToCore(int core_id) {
 #ifdef __linux__
     if (!validCore(core_id))
@@ -50,7 +53,9 @@ public:
     SPDLOG_DEBUG("Thread pinned to core {}", core_id);
     return true;
 #elif defined(__APPLE__)
-
+    // Mach has no equivalent of sched_getcpu(), and THREAD_AFFINITY_POLICY is
+    // an affinity *hint* the scheduler may ignore outright (it is unsupported
+    // on Apple Silicon). So this cannot be verified - only reported.
     thread_affinity_policy_data_t policy = {core_id};
     const kern_return_t kr = thread_policy_set(
         pthread_mach_thread_np(pthread_self()), THREAD_AFFINITY_POLICY,
@@ -70,6 +75,8 @@ public:
 #endif
   }
 
+  // Pin current thread to multiple cores (allows migration within set). No
+  // landing check here - any core in the set is a correct outcome.
   static bool pinToCores(const std::vector<int> &core_ids) {
 #ifdef __linux__
     cpu_set_t cpuset;
@@ -120,6 +127,7 @@ public:
 
   static int getNumCores() { return std::thread::hardware_concurrency(); }
 
+  // Get current CPU core (may change if not pinned)
   static int getCurrentCore() {
 #ifdef __linux__
     return sched_getcpu();
@@ -177,7 +185,11 @@ public:
 
 private:
 #ifdef __linux__
-
+  // CPU_SET() past CPU_SETSIZE, or with a negative index, is undefined
+  // behaviour rather than an error - it writes outside the mask. Callers pass
+  // core ids straight from config and command lines, where -1 is a common
+  // "no dedicated core" sentinel, so the guard belongs here and not in each
+  // of them. In-range-but-nonexistent cores are left to the syscall's EINVAL.
   static bool validCore(int core_id) {
     if (core_id < 0 || core_id >= CPU_SETSIZE) {
       SPDLOG_ERROR("Core id {} is out of range [0, {})", core_id, CPU_SETSIZE);
@@ -188,20 +200,29 @@ private:
 #endif
 };
 
+// RAII wrapper for CPU pinning
 class ScopedCpuPin {
 public:
   explicit ScopedCpuPin(int core_id) : core_id_(core_id), pinned_(false) {
-
+    // Save original affinity
     original_affinity_ = CpuAffinity::getCurrentAffinity();
 
+    // Pin to new core
     pinned_ = CpuAffinity::pinToCore(core_id);
   }
 
+  // Non-copyable: a copy's destructor would restore the original affinity
+  // while the scope that asked to be pinned is still running, silently
+  // un-pinning a hot loop. Non-movable too - there is no use for transferring
+  // one of these out of the scope that created it.
   ScopedCpuPin(const ScopedCpuPin &) = delete;
   ScopedCpuPin &operator=(const ScopedCpuPin &) = delete;
 
   ~ScopedCpuPin() {
-
+    // Restore on isPinned() == false too: pinToCore() reports failure when the
+    // thread did not land on the requested core, but the mask was already
+    // replaced by then, so skipping the restore here would leak a narrowed
+    // affinity out of the scope that asked for it.
     if (!original_affinity_.empty()) {
       CpuAffinity::pinToCores(original_affinity_);
     }
@@ -216,4 +237,4 @@ private:
   std::vector<int> original_affinity_;
 };
 
-}
+} // namespace revobase::system

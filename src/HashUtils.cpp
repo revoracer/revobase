@@ -13,4 +13,4 @@ uint32_t HashUtils::hash32(const unsigned char *key, int32_t length,
   return h;
 }
 
-}
+} // namespace revobase

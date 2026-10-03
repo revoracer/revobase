@@ -11,6 +11,7 @@
 
 #include <spdlog/spdlog.h>
 
+// Platform detection
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #define IS_MACOS 1
@@ -34,12 +35,16 @@ namespace os {
 std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
                                           std::size_t size, bool is_writing,
                                           bool prefault, bool zero_new_file) {
-
+  // Only writers create/resize files, so only writers need the pre-open
+  // existence + size check (st/file_exists feed the is_writing branches
+  // below). For readers this stat() is a wasted syscall on every slow load.
   struct stat st{};
   bool file_exists = false;
   if (is_writing)
     file_exists = (stat(path.c_str(), &st) == 0);
 
+  // Open file with close-on-exec flag
+  // Readers must never create or resize stream files.
   const int open_flags =
       (is_writing ? (O_RDWR | O_CREAT) : O_RDONLY) | O_CLOEXEC;
   int fd = open(path.c_str(), open_flags, (mode_t)0600);
@@ -65,11 +70,13 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
     }
   }
 
+  // Allocate file size if writer owns the mapping and the file doesn't exist
+  // or is wrong size.
   if (is_writing && (!file_exists || st.st_size != static_cast<off_t>(size))) {
 #if IS_LINUX
-
+    // Try fallocate first (faster, allocates contiguous blocks)
     if (fallocate(fd, 0, 0, size) != 0) {
-
+      // Fallback to ftruncate
       if (ftruncate(fd, size) != 0) {
         int err = errno;
         close(fd);
@@ -80,7 +87,7 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
       }
     }
 #else
-
+    // macOS doesn't have fallocate, use ftruncate directly
     if (ftruncate(fd, size) != 0) {
       int err = errno;
       close(fd);
@@ -92,20 +99,22 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
 #endif
   }
 
+  // Setup mmap flags
   int prot = is_writing ? (PROT_READ | PROT_WRITE) : PROT_READ;
   int flags = MAP_SHARED;
 
   if (prefault) {
 #if IS_LINUX
-
+    // Prefault all pages immediately (critical for HFT)
     flags |= MAP_POPULATE;
 #endif
-
+    // hugetlbfs-backed files get explicit huge pages from the filesystem.
+    // Ordinary files stay on the regular-page path and may be promoted by THP.
   }
 
   void *buffer = mmap(nullptr, size, prot, flags, fd, 0);
   int err = errno;
-  close(fd);
+  close(fd); // Close fd immediately after mmap
 
   if (buffer == MAP_FAILED) {
     if (is_writing && !file_exists)
@@ -116,33 +125,42 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
 
   if (prefault) {
 #if IS_LINUX
-
+    // Advise kernel about access pattern
+    // MADV_SEQUENTIAL: For stream/log files (sequential access)
+    // MADV_RANDOM: For hash tables/indexes (random access)
     if (madvise(buffer, size, MADV_SEQUENTIAL) != 0) {
       SPDLOG_WARN("madvise MADV_SEQUENTIAL failed for {}: {}", path,
                   strerror(errno));
     }
 
+    // Request transparent huge pages if explicit huge pages weren't available
     if (madvise(buffer, size, MADV_HUGEPAGE) != 0) {
       SPDLOG_DEBUG("MADV_HUGEPAGE failed for {}: {}", path, strerror(errno));
     }
 #elif IS_MACOS
-
+    // macOS equivalent: advise sequential access
     if (madvise(buffer, size, MADV_SEQUENTIAL) != 0) {
       SPDLOG_WARN("madvise MADV_SEQUENTIAL failed for {}: {}", path,
                   strerror(errno));
     }
 
+    // macOS doesn't have MADV_HUGEPAGE, but we can use MADV_WILLNEED
+    // to prefault pages
     if (madvise(buffer, size, MADV_WILLNEED) != 0) {
       SPDLOG_DEBUG("madvise MADV_WILLNEED failed for {}: {}", path,
                    strerror(errno));
     }
 #endif
 
+    // Lock pages in RAM to prevent swapping (critical for HFT)
     if (mlock(buffer, size) != 0) {
       int lock_err = errno;
 #if IS_LINUX
       munmap(buffer, size);
-
+      // Same cleanup the ftruncate and mmap failure paths do: a file we just
+      // created must not survive a failed load. Note the is_writing guard -
+      // file_exists is only ever computed for writers, so testing !file_exists
+      // alone would unlink a file a reader merely opened.
       if (is_writing && !file_exists)
         unlink(path.c_str());
       throw MmapError(
@@ -155,19 +173,28 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
 #endif
     }
 
+    // Explicitly fault in all pages by touching them.
+    // Only zero-fill if this is a new file being created by a writer AND the
+    // caller owns the mapping exclusively at this point (zero_new_file). A
+    // caller that only settles ownership after this returns must skip the
+    // memset to avoid clobbering a concurrent writer that mapped the
+    // just-created file (see the zero_new_file note in MmapBuffer.h).
     if (is_writing && !file_exists && zero_new_file) {
-
+      // Zero-fill the entire region for new files
       std::memset(buffer, 0, size);
     } else {
-
+      // For existing files or read-only, just touch each page to fault it in
       volatile char *ptr = static_cast<volatile char *>(buffer);
-
+      // Ask the platform rather than assuming: a stride larger than the real
+      // page size skips pages and silently under-prefaults (4KB-page Intel
+      // Macs under the old 16384 constant), while a smaller one just touches
+      // the same page repeatedly - pure waste under 2MB hugepages.
       const long page = ::sysconf(_SC_PAGESIZE);
       const std::size_t page_size =
           page > 0 ? static_cast<std::size_t>(page) : 4096;
 
       for (std::size_t i = 0; i < size; i += page_size) {
-
+        // Just read to fault in the page, don't modify
         (void)ptr[i];
       }
     }
@@ -257,23 +284,30 @@ bool MmapBuffer::releaseMmapBuffer(std::uintptr_t address, std::size_t size,
     return false;
   }
   if (prefault) {
-
+    // If the buffer was prefaulted, that means we have pin the pages in RAM
+    // preventing the OS from swapping them out. Now we'd release that pin,
+    // allowing the kernel to reclaim the physical pages under memory pressure.
     if (munlock(buffer, size) != 0) {
       SPDLOG_ERROR("munlock failed: {}", strerror(errno));
     }
   }
-
+  // A failed sync is something to report, not a reason to skip the unmap: the
+  // caller is usually a destructor (see Segment) and cannot retry, so bailing
+  // out here would strand the whole mapping for the life of the process.
   bool ok = true;
   if (msync_mode == MsyncMode::SYNC) {
-
+    // block until the dirty pages in the page cache are written to disk
     if (msync(buffer, size, MS_SYNC) != 0) {
       SPDLOG_ERROR("msync failed: {}", strerror(errno));
       ok = false;
     }
   } else if (msync_mode == MsyncMode::ASYNC) {
-    msync(buffer, size, MS_ASYNC);
+    msync(buffer, size, MS_ASYNC); // best-effort; ignore error
   }
+  // MsyncMode::NONE: rely on kernel writeback
 
+  // remove the virtual address mapping. After this the address range is invalid
+  // and any access to it segfaults
   if (munmap(buffer, size) != 0) {
     SPDLOG_ERROR("munmap failed: {}", strerror(errno));
     ok = false;
@@ -286,5 +320,5 @@ bool MmapBuffer::releaseMmapBuffer(std::uintptr_t address, std::size_t size,
   return true;
 }
 
-}
-}
+} // namespace os
+} // namespace revobase

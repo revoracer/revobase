@@ -7,6 +7,19 @@
 #include <cstring>
 
 namespace revobase {
+//-----------------------------------------------------------------------------
+// MurmurHash3 was written by Austin Appleby, and is placed in the public
+// domain. The author hereby disclaims copyright to this source code.
+
+// Note - The x86 and x64 versions do _not_ produce the same results, as the
+// algorithms are optimized for their respective platforms. You can still
+// compile and run any of them on any platform, but your performance with the
+// non-native version will be less than optimal.
+
+//-----------------------------------------------------------------------------
+// Platform-specific functions and macros
+
+// Microsoft Visual Studio
 
 #if defined(_MSC_VER)
 
@@ -19,7 +32,9 @@ namespace revobase {
 
 #define BIG_CONSTANT(x) (x)
 
-#else
+// Other compilers
+
+#else // defined(_MSC_VER)
 
 #define FORCE_INLINE inline __attribute__((always_inline))
 
@@ -36,8 +51,29 @@ inline uint64_t rotl64(uint64_t x, int8_t r) {
 
 #define BIG_CONSTANT(x) (x##LLU)
 
-#endif
+#endif // !defined(_MSC_VER)
 
+//-----------------------------------------------------------------------------
+// Block read - if your platform needs to do endian-swapping or can only
+// handle aligned reads, do the conversion here
+//
+// Upstream took a `const uint32_t *` and returned p[i]. The key is a `const
+// void *` of arbitrary alignment - hashStr32() hands us string_view::data(),
+// which is wherever the substring starts - so both the cast that produced that
+// pointer and the load through it were undefined behaviour. UBSan caught it:
+//   runtime error: load of misaligned address 0x... for type 'const uint32_t',
+//                  which requires 4 byte alignment
+// reached from a std::string_view starting 7 bytes into its buffer.
+//
+// x86 tolerates unaligned loads in hardware, so this never misbehaved here.
+// The exposure is the compiler acting on an alignment guarantee it was handed
+// but that the data does not honour - vectorising the body loop into aligned
+// moves - plus a plain fault on stricter targets.
+//
+// Taking a byte pointer keeps any uint32_t*/uint64_t* from ever being formed,
+// and memcpy from it is the standard well-defined unaligned read: every
+// compiler folds it back to the single mov it was before. The addresses read
+// are unchanged, so hash values are bit-identical.
 FORCE_INLINE uint32_t getblock32(const uint8_t *p, int i) {
   uint32_t v;
   std::memcpy(&v, p + static_cast<std::ptrdiff_t>(i) * 4, sizeof(v));
@@ -50,6 +86,9 @@ FORCE_INLINE uint64_t getblock64(const uint8_t *p, int i) {
   return v;
 }
 
+//-----------------------------------------------------------------------------
+// Finalization mix - force all bits of a hash block to avalanche
+
 FORCE_INLINE uint32_t fmix32(uint32_t h) {
   h ^= h >> 16;
   h *= 0x85ebca6b;
@@ -59,6 +98,8 @@ FORCE_INLINE uint32_t fmix32(uint32_t h) {
 
   return h;
 }
+
+//----------
 
 FORCE_INLINE uint64_t fmix64(uint64_t k) {
   k ^= k >> 33;
@@ -70,6 +111,8 @@ FORCE_INLINE uint64_t fmix64(uint64_t k) {
   return k;
 }
 
+//-----------------------------------------------------------------------------
+
 void MurmurHash3_x86_32(const void *key, int len, uint32_t seed, void *out) {
   const uint8_t *data = (const uint8_t *)key;
   const int nblocks = len / 4;
@@ -78,6 +121,9 @@ void MurmurHash3_x86_32(const void *key, int len, uint32_t seed, void *out) {
 
   const uint32_t c1 = 0xcc9e2d51;
   const uint32_t c2 = 0x1b873593;
+
+  //----------
+  // body
 
   const uint8_t *blocks = data + nblocks * 4;
 
@@ -92,6 +138,9 @@ void MurmurHash3_x86_32(const void *key, int len, uint32_t seed, void *out) {
     h1 = ROTL32(h1, 13);
     h1 = h1 * 5 + 0xe6546b64;
   }
+
+  //----------
+  // tail
 
   const uint8_t *tail = (const uint8_t *)(data + nblocks * 4);
 
@@ -112,12 +161,19 @@ void MurmurHash3_x86_32(const void *key, int len, uint32_t seed, void *out) {
     h1 ^= k1;
   };
 
+  //----------
+  // finalization
+
   h1 ^= len;
 
   h1 = fmix32(h1);
 
+  // Same reasoning as getblock32: `out` is a void * of unknown alignment, so
+  // storing through a cast uint32_t * is the write-side form of the load bug.
   std::memcpy(out, &h1, sizeof(h1));
 }
+
+//-----------------------------------------------------------------------------
 
 void MurmurHash3_x86_128(const void *key, const int len, uint32_t seed,
                          void *out) {
@@ -133,6 +189,9 @@ void MurmurHash3_x86_128(const void *key, const int len, uint32_t seed,
   const uint32_t c2 = 0xab0e9789;
   const uint32_t c3 = 0x38b34ae5;
   const uint32_t c4 = 0xa1e38b93;
+
+  //----------
+  // body
 
   const uint8_t *blocks = data + nblocks * 16;
 
@@ -178,6 +237,9 @@ void MurmurHash3_x86_128(const void *key, const int len, uint32_t seed,
     h4 += h1;
     h4 = h4 * 5 + 0x32ac3b17;
   }
+
+  //----------
+  // tail
 
   const uint8_t *tail = (const uint8_t *)(data + nblocks * 16);
 
@@ -249,6 +311,9 @@ void MurmurHash3_x86_128(const void *key, const int len, uint32_t seed,
     h1 ^= k1;
   };
 
+  //----------
+  // finalization
+
   h1 ^= len;
   h2 ^= len;
   h3 ^= len;
@@ -277,6 +342,8 @@ void MurmurHash3_x86_128(const void *key, const int len, uint32_t seed,
   std::memcpy(out, h, sizeof(h));
 }
 
+//-----------------------------------------------------------------------------
+
 void MurmurHash3_x64_128(const void *key, const int len, const uint32_t seed,
                          void *out) {
   const uint8_t *data = (const uint8_t *)key;
@@ -287,6 +354,9 @@ void MurmurHash3_x64_128(const void *key, const int len, const uint32_t seed,
 
   const uint64_t c1 = BIG_CONSTANT(0x87c37b91114253d5);
   const uint64_t c2 = BIG_CONSTANT(0x4cf5ad432745937f);
+
+  //----------
+  // body
 
   const uint8_t *blocks = data;
 
@@ -312,6 +382,9 @@ void MurmurHash3_x64_128(const void *key, const int len, const uint32_t seed,
     h2 += h1;
     h2 = h2 * 5 + 0x38495ab5;
   }
+
+  //----------
+  // tail
 
   const uint8_t *tail = (const uint8_t *)(data + nblocks * 16);
 
@@ -360,6 +433,9 @@ void MurmurHash3_x64_128(const void *key, const int len, const uint32_t seed,
     h1 ^= k1;
   };
 
+  //----------
+  // finalization
+
   h1 ^= len;
   h2 ^= len;
 
@@ -376,4 +452,6 @@ void MurmurHash3_x64_128(const void *key, const int len, const uint32_t seed,
   std::memcpy(out, h, sizeof(h));
 }
 
-}
+//-----------------------------------------------------------------------------
+
+} // namespace revobase

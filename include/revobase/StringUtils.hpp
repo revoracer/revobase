@@ -13,14 +13,18 @@ namespace revobase {
 
 class StringUtils {
 public:
+  // ========================================================================
+  // REPLACE OPERATIONS
+  // ========================================================================
 
+  // modified in-place
   static inline void replaceAll(std::string &source, std::string_view from,
                                 std::string_view to) {
     if (from.empty())
       return;
 
     std::string new_str;
-
+    // The formula overestimates because it's a conservative heuristic.
     new_str.reserve(source.length() + (to.length() > from.length()
                                            ? (source.length() / from.length()) *
                                                  (to.length() - from.length())
@@ -37,6 +41,8 @@ public:
     source.swap(new_str);
   }
 
+  // Hot-path version: replace single character (common in trading: space,
+  // comma, etc.)
   static inline void replaceChar(std::string &source, char from,
                                  char to) noexcept {
     for (char &c : source) {
@@ -45,6 +51,11 @@ public:
     }
   }
 
+  // ========================================================================
+  // CASE OPERATIONS
+  // ========================================================================
+
+  // Check if string is uppercase (optimized for trading symbols)
   static inline bool isUpper(std::string_view s) noexcept {
     return std::all_of(s.begin(), s.end(), [](unsigned char c) {
       return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
@@ -55,7 +66,7 @@ public:
   static inline std::string toLower(std::string s) {
     for (char &c : s) {
       if (c >= 'A' && c <= 'Z') {
-        c = c + ('a' - 'A');
+        c = c + ('a' - 'A'); // Branchless case conversion
       }
     }
     return s;
@@ -65,6 +76,7 @@ public:
     return toLower(std::string{s});
   }
 
+  // Convert to lowercase in-place (zero allocation)
   static inline void toLowerInPlace(std::string &s) noexcept {
     for (char &c : s) {
       if (c >= 'A' && c <= 'Z') {
@@ -86,6 +98,7 @@ public:
     return toUpper(std::string{s});
   }
 
+  // Convert to uppercase in-place
   static inline void toUpperInPlace(std::string &s) noexcept {
     for (char &c : s) {
       if (c >= 'a' && c <= 'z') {
@@ -94,10 +107,15 @@ public:
     }
   }
 
+  // ========================================================================
+  // SPLIT OPERATIONS
+  // ========================================================================
+
+  // Original split - allocates strings
   static inline std::vector<std::string> split(std::string_view src,
                                                char delimiter) {
     std::vector<std::string> result;
-    result.reserve(8);
+    result.reserve(8); // Pre-allocate for common case
 
     size_t start = 0;
     size_t end = src.find(delimiter);
@@ -112,6 +130,7 @@ public:
     return result;
   }
 
+  // Zero-copy split - returns views (HOT PATH for parsing)
   static inline std::vector<std::string_view> splitView(std::string_view src,
                                                         char delimiter) {
     std::vector<std::string_view> result;
@@ -130,6 +149,8 @@ public:
     return result;
   }
 
+  // Fixed-size split for known number of fields (zero allocations)
+  // Returns number of fields parsed
   template <size_t N>
   static inline size_t
   splitFixed(std::string_view src, char delimiter,
@@ -151,6 +172,7 @@ public:
     return count;
   }
 
+  // Split on multiple delimiters (e.g., space, tab, comma)
   static inline std::vector<std::string_view>
   splitAny(std::string_view src, std::string_view delimiters) {
     std::vector<std::string_view> result;
@@ -163,7 +185,7 @@ public:
         result.push_back(src.substr(start));
         break;
       }
-      if (end > start) {
+      if (end > start) { // Skip empty tokens
         result.push_back(src.substr(start, end - start));
       }
       start = end + 1;
@@ -172,6 +194,11 @@ public:
     return result;
   }
 
+  // ========================================================================
+  // JOIN OPERATIONS
+  // ========================================================================
+
+  // Original join with iterators
   template <typename Iterator>
   static inline std::string join(Iterator begin, Iterator end,
                                  std::string_view separator) {
@@ -180,6 +207,7 @@ public:
 
     std::string result;
 
+    // Pre-calculate size for single allocation (optimization)
     size_t total_size = 0;
     size_t count = 0;
     for (auto it = begin; it != end; ++it) {
@@ -191,6 +219,7 @@ public:
     }
     result.reserve(total_size);
 
+    // Build string
     auto it = begin;
     result.append(*it);
     ++it;
@@ -202,12 +231,18 @@ public:
     return result;
   }
 
+  // Join with container (more convenient)
   template <typename Container>
   static inline std::string joinContainer(const Container &items,
                                           std::string_view separator) {
     return join(items.begin(), items.end(), separator);
   }
 
+  // ========================================================================
+  // TRIM OPERATIONS (common in message parsing)
+  // ========================================================================
+
+  // Trim whitespace from both ends
   static inline std::string_view trim(std::string_view s) noexcept {
     const char *ws = " \t\n\r\f\v";
     size_t start = s.find_first_not_of(ws);
@@ -227,6 +262,11 @@ public:
     return (end == std::string_view::npos) ? "" : s.substr(0, end + 1);
   }
 
+  // ========================================================================
+  // COMPARISON OPERATIONS
+  // ========================================================================
+
+  // Case-insensitive comparison (optimized)
   static inline bool equalsIgnoreCase(std::string_view a,
                                       std::string_view b) noexcept {
     if (a.length() != b.length())
@@ -236,6 +276,7 @@ public:
       char ca = a[i];
       char cb = b[i];
 
+      // Convert to lowercase for comparison
       if (ca >= 'A' && ca <= 'Z')
         ca += ('a' - 'A');
       if (cb >= 'A' && cb <= 'Z')
@@ -247,27 +288,46 @@ public:
     return true;
   }
 
+  // Check if string starts with prefix
   static inline bool startsWith(std::string_view str,
                                 std::string_view prefix) noexcept {
     return str.size() >= prefix.size() &&
            str.compare(0, prefix.size(), prefix) == 0;
   }
 
+  // Check if string ends with suffix
   static inline bool endsWith(std::string_view str,
                               std::string_view suffix) noexcept {
     return str.size() >= suffix.size() &&
            str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
   }
 
+  // ========================================================================
+  // NUMERIC PARSING
+  //
+  // Deliberately absent. Use std::from_chars for plain integers/doubles, or
+  // revobase::parse_decimal_parts / decimal_to_fixed (DecimalUtils.h) for
+  // exchange decimal strings that must land on a fixed-point tick.
+  // The hand-rolled parsers that used to live here were unused, silently
+  // overflowed, and disagreed with strtod in the low bits.
+  // ========================================================================
+
+  // ========================================================================
+  // UTILITY OPERATIONS
+  // ========================================================================
+
+  // Check if string contains substring
   static inline bool contains(std::string_view str,
                               std::string_view substr) noexcept {
     return str.find(substr) != std::string_view::npos;
   }
 
+  // Count occurrences of character
   static inline size_t countChar(std::string_view str, char c) noexcept {
     return std::count(str.begin(), str.end(), c);
   }
 
+  // Pad string to fixed width (useful for fixed-width protocols)
   static inline std::string padRight(std::string_view str, size_t width,
                                      char fill = ' ') {
     if (str.length() >= width)
@@ -291,4 +351,4 @@ public:
   }
 };
 
-}
+} // namespace revobase

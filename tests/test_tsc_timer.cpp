@@ -1,5 +1,3 @@
-#include "CpuAffinity.h"
-#include "TscTimer.h"
 #include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
@@ -9,7 +7,6 @@
 #include <vector>
 
 #ifdef __linux__
-#include <pthread.h>
 #include <sched.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
@@ -18,6 +15,9 @@
 #include <mach/thread_policy.h>
 #include <pthread.h>
 #endif
+
+#include <revobase/CpuAffinity.h>
+#include <revobase/TscTimer.h>
 
 using namespace revobase;
 
@@ -248,6 +248,9 @@ TEST_CASE("TscTimer::ns_to_cycles - fractional inverse of delta_ns",
   }
 
   SECTION("per-interval accumulation stays aligned to a one-shot span") {
+    // advancing by the per-interval cycle count (carrying the sub-cycle
+    // fraction) each step must not drift from the exact elapsed-span
+    // conversion, regardless of step count.
     const double interval_cycles = TscTimer::ns_to_cycles(1'000.0);
     const int64_t steps = 2'000'000;
     uint64_t acc = 0;
@@ -269,10 +272,15 @@ TEST_CASE("TscTimer - cross-core timestamp consistency", "[tsc][cross-core]") {
   TscTimer::calibrate();
 
   // Earlier test cases pin the main thread to core 0 and leave it there. Undo
-  // that, or this test spends its life gating 16 spinning workers from a
+  // that, or this test spends its life gating N spinning workers from a
   // single core.
   restore_initial_affinity();
 
+  // Only cores this process may actually run on. Deliberately NOT filtered to
+  // exclude isolcpus/nohz_full cores: those are exactly the cores the hot
+  // paths run on, so dropping them would skip coverage where it matters most.
+  // Their scheduling stalls are handled by taking the best of several samples
+  // below, which separates a transient stall from a real clock offset.
   const std::vector<int> cores = usable_cores();
   const int num_cores = static_cast<int>(cores.size());
   INFO("usable cores: " << num_cores << " of "
@@ -281,6 +289,15 @@ TEST_CASE("TscTimer - cross-core timestamp consistency", "[tsc][cross-core]") {
     SKIP("fewer than 2 usable cores - cannot measure cross-core consistency");
   }
 
+  // A "diagnose TSC synchronization" section used to sit here. It spawned one
+  // thread per core, slept 1ms in each, then called a large raw-cycle spread an
+  // offset problem. The threads were never synchronized, so the spread it
+  // measured was thread-creation stagger and wakeup jitter, not TSC offset -
+  // and the 10^10-cycle threshold it compared against is ~3.3s at 3GHz, so it
+  // could never fire anyway. It asserted nothing. The section below does the
+  // same measurement correctly, by releasing every thread from a spin on a
+  // shared flag, and actually checks the result.
+
   SECTION("simultaneous timestamps across cores are close") {
     // Skip this test if TSC has known offset issues
     if (TscTimer::has_cross_core_offset_issue()) {
@@ -288,6 +305,17 @@ TEST_CASE("TscTimer - cross-core timestamp consistency", "[tsc][cross-core]") {
            "test");
     }
 
+    // One synchronized sample: every thread pins, announces arrival, spins on
+    // a shared flag, and stamps the moment it flips.
+    //
+    // The arrival counter is load-bearing. Spinning on the flag alone
+    // synchronizes when each thread READS the TSC but not that every thread
+    // has REACHED the spin before the flag flips - a thread still being
+    // created finds the flag already true and stamps whenever it eventually
+    // runs, turning the "spread" into thread-startup latency.
+    //
+    // No yield() in the spin: once the flag is set, a yield is pure added
+    // latency inside the window being measured.
     auto sample = [&]() -> std::vector<uint64_t> {
       std::atomic<bool> start_flag{false};
       std::atomic<int> ready{0};
@@ -332,6 +360,13 @@ TEST_CASE("TscTimer - cross-core timestamp consistency", "[tsc][cross-core]") {
       return timestamps;
     };
 
+    // Take the best of several samples. A genuine cross-core TSC offset is a
+    // fixed property of the hardware and shows up in every sample; a thread
+    // that gets stalled after the flag flips does not. Without this the test
+    // measures the host's scheduling behaviour rather than the TSC: on this
+    // box a thread pinned to an isolcpus+nohz_full core is intermittently
+    // ~950ms LATE (not early), which is a tickless-core scheduling stall
+    // wearing the costume of a clock offset.
     std::vector<uint64_t> timestamps;
     double spread_ns = 0.0;
     uint64_t min_ts = 0;
@@ -368,21 +403,16 @@ TEST_CASE("TscTimer - cross-core timestamp consistency", "[tsc][cross-core]") {
       for (size_t j = i + 1; j < timestamps.size(); ++j) {
         uint64_t ts_i = timestamps[i];
         uint64_t ts_j = timestamps[j];
-
         // Calculate absolute cycle difference
         uint64_t cycle_diff = (ts_i > ts_j) ? (ts_i - ts_j) : (ts_j - ts_i);
-
         INFO("Core " << i << " vs " << j << ": ts_i=" << ts_i
                      << ", ts_j=" << ts_j << ", cycle_diff=" << cycle_diff);
-
         // Convert to nanoseconds - use the smaller timestamp as start
         uint64_t start = std::min(ts_i, ts_j);
         uint64_t end = std::max(ts_i, ts_j);
         double delta = TscTimer::delta_ns(start, end);
-
         INFO("Delta between core " << i << " and " << j << ": " << delta
                                    << " ns (from " << cycle_diff << " cycles)");
-
         REQUIRE(delta >= 0.0);
         REQUIRE(delta < 10'000'000); // < 10ms
       }

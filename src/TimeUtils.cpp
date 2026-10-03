@@ -11,6 +11,16 @@
 
 namespace revobase {
 
+/*
+ * How often does CLOCK_REALTIME jump backward?
+1. Typical NTP adjustment: ±10ms per day (gradual slewing)
+2. Large step adjustment: Very rare (months/years)
+3. Magnitude: Usually <1 second
+
+ Because our orders live for milliseconds, if NTP jumps during that window,
+ we have bigger problems(exchange connection, network)
+ In practice, negligible concern
+ * */
 Timestamp Timestamp::now() noexcept {
 #ifdef __APPLE__
   return Timestamp(clock_gettime_nsec_np(CLOCK_REALTIME));
@@ -74,4 +84,4 @@ Timestamp Timestamp::fromYYYYmmdd(const std::string &str_date) {
   return Timestamp::fromYYYYmmddHHMMSS(str_date + " 00:00:00");
 }
 
-}
+} // namespace revobase

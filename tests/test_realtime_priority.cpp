@@ -1,12 +1,20 @@
-#include "RealtimePriority.h"
-
 #include <catch2/catch_test_macros.hpp>
 
 #include <thread>
 #include <utility>
 
+#include <revobase/RealtimePriority.h>
+
 using namespace revobase::system;
 
+// Everything here must pass BOTH unprivileged and as root. setRealtimePriority
+// needs CAP_SYS_NICE, so no test asserts that it succeeded - they assert the
+// argument validation (which runs before the syscall and is therefore
+// deterministic) and that state is consistent whichever way the syscall went.
+//
+// Deliberately untested: lockMemory()/lockCurrentMemory(). mlockall(MCL_FUTURE)
+// is process-wide and would bulk-fault every later mmap in this binary,
+// including the MmapBuffer cases.
 
 TEST_CASE("setRealtimePriority rejects out-of-range priorities",
           "[realtime]") {
@@ -167,19 +175,16 @@ TEST_CASE("ScopedRealtimePriority restores the entry policy", "[realtime]") {
 
 TEST_CASE("setPolicy round-trips non-realtime policies", "[realtime]") {
   const auto entry = RealtimePriority::getCurrentPriority();
-
   // The pair every non-RT policy reports. setRealtimePriority() rejects this
   // outright, which is the whole reason setPolicy() exists.
   REQUIRE(RealtimePriority::setPolicy(SchedulerPolicy::NORMAL, 0));
   REQUIRE_FALSE(RealtimePriority::isRealtime());
-
   // Mismatched pairs are rejected before the syscall, both directions.
   REQUIRE_FALSE(RealtimePriority::setPolicy(SchedulerPolicy::NORMAL, 1));
   REQUIRE_FALSE(RealtimePriority::setPolicy(SchedulerPolicy::FIFO, 0));
   REQUIRE_FALSE(RealtimePriority::setPolicy(SchedulerPolicy::RR, 100));
   REQUIRE(RealtimePriority::getCurrentPriority() ==
           std::pair{SchedulerPolicy::NORMAL, 0});
-
   RealtimePriority::setPolicy(entry.first, entry.second);
 }
 
@@ -190,27 +195,23 @@ TEST_CASE("ScopedRealtimePriority restores a BATCH thread", "[realtime]") {
   // them - unprivileged it proves nothing, as root it catches the thread
   // being stranded at SCHED_FIFO on scope exit.
   const auto entry = RealtimePriority::getCurrentPriority();
-
   if (!RealtimePriority::setPolicy(SchedulerPolicy::BATCH, 0)) {
     SUCCEED("SCHED_BATCH not permitted here");
     return;
   }
   REQUIRE(RealtimePriority::getCurrentPriority() ==
           std::pair{SchedulerPolicy::BATCH, 0});
-
   // The defect itself, without needing privileges: this is exactly the call
   // the old destructor made to restore a BATCH thread, and it cannot work.
   REQUIRE_FALSE(
       RealtimePriority::setRealtimePriority(0, SchedulerPolicy::BATCH));
   // What the destructor calls now.
   REQUIRE(RealtimePriority::setPolicy(SchedulerPolicy::BATCH, 0));
-
   bool acquired = false;
   {
     ScopedRealtimePriority scoped(50);
     acquired = scoped.isEnabled();
   }
-
   if (acquired) {
     // Previously left as {FIFO, 50}: the restore ran setRealtimePriority(0,
     // BATCH), which failed the 1-99 range check and returned without doing
@@ -219,7 +220,6 @@ TEST_CASE("ScopedRealtimePriority restores a BATCH thread", "[realtime]") {
             std::pair{SchedulerPolicy::BATCH, 0});
     REQUIRE_FALSE(RealtimePriority::isRealtime());
   }
-
   RealtimePriority::setPolicy(entry.first, entry.second);
   REQUIRE(RealtimePriority::getCurrentPriority() == entry);
 }

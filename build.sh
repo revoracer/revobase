@@ -6,6 +6,7 @@ BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build}"
 BUILD_TYPE="Release"
 BUILD_TESTS="ON"
 RUN_TESTS="OFF"
+RUN_BENCHMARKS="OFF"
 CONFIGURE_ONLY="OFF"
 JOBS=""
 DEPENDENCY_SUBMODULES=(external/fmt external/spdlog external/nlohmann_json)
@@ -18,6 +19,7 @@ Commands:
   release          Configure and build Release (default)
   debug            Configure and build Debug
   test             Build and run C++ tests
+  benchmarks       Build Release and run the hidden [!benchmark] cases
   clean            Remove the build directory
   doctor           Print local build tool versions
 
@@ -51,6 +53,11 @@ case "${command}" in
     BUILD_TYPE="Release"
     BUILD_TESTS="ON"
     RUN_TESTS="ON"
+    ;;
+  benchmarks)
+    BUILD_TYPE="Release"
+    BUILD_TESTS="ON"
+    RUN_BENCHMARKS="ON"
     ;;
   clean)
     rm -rf "${BUILD_DIR}"
@@ -176,7 +183,8 @@ fi
 
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
-  -DREVOBASE_BUILD_TESTS="${BUILD_TESTS}"
+  -DREVOBASE_BUILD_TESTS="${BUILD_TESTS}" \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 if [[ "${CONFIGURE_ONLY}" == "ON" ]]; then
   exit 0
@@ -190,4 +198,8 @@ cmake "${build_args[@]}"
 
 if [[ "${RUN_TESTS}" == "ON" ]]; then
   ctest --test-dir "${BUILD_DIR}" --output-on-failure
+fi
+
+if [[ "${RUN_BENCHMARKS}" == "ON" ]]; then
+  "${BUILD_DIR}/revobase_tests" "[!benchmark]"
 fi
