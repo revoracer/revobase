@@ -41,8 +41,8 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
     std::string path = getTestPath("bench_4k.mmap");
     meter.measure([&] {
       std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, small_size, true, false);
-      MmapBuffer::releaseMmapBuffer(addr, small_size, false, MsyncMode::NONE);
+          MmapBuffer::loadMmapBuffer(path, small_size, true, true);
+      MmapBuffer::releaseMmapBuffer(addr, small_size, true, MsyncMode::NONE);
       return addr;
     });
     fs::remove(path);
@@ -53,8 +53,8 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
     std::string path = getTestPath("bench_4k_lazy.mmap");
     meter.measure([&] {
       std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, small_size, true, true);
-      MmapBuffer::releaseMmapBuffer(addr, small_size, true, MsyncMode::NONE);
+          MmapBuffer::loadMmapBuffer(path, small_size, true, false);
+      MmapBuffer::releaseMmapBuffer(addr, small_size, false, MsyncMode::NONE);
       return addr;
     });
     fs::remove(path);
@@ -65,8 +65,8 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
     std::string path = getTestPath("bench_1m.mmap");
     meter.measure([&] {
       std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, medium_size, true, false);
-      MmapBuffer::releaseMmapBuffer(addr, medium_size, false, MsyncMode::NONE);
+          MmapBuffer::loadMmapBuffer(path, medium_size, true, true);
+      MmapBuffer::releaseMmapBuffer(addr, medium_size, true, MsyncMode::NONE);
       return addr;
     });
     fs::remove(path);
@@ -77,8 +77,8 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
     std::string path = getTestPath("bench_100m.mmap");
     meter.measure([&] {
       std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, large_size, true, false);
-      MmapBuffer::releaseMmapBuffer(addr, large_size, false, MsyncMode::NONE);
+          MmapBuffer::loadMmapBuffer(path, large_size, true, true);
+      MmapBuffer::releaseMmapBuffer(addr, large_size, true, MsyncMode::NONE);
       return addr;
     });
     fs::remove(path);
