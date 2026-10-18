@@ -5,13 +5,14 @@
 #include <cstring>
 #include <fstream>
 #include <pthread.h>
-#include <sched.h>
 #include <sstream>
-#include <thread>
+#include <string>
 #include <vector>
 
 #include <spdlog/spdlog.h>
 #ifdef __linux__
+#include <sched.h>
+#include <unistd.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_init.h>
@@ -37,11 +38,10 @@ public:
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core_id, &cpuset);
-    const int result =
-        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-    if (result != 0) {
+    const int rc = applyMask(pthread_self(), cpuset);
+    if (rc != 0) {
       SPDLOG_ERROR("Failed to pin thread to core {}: {}", core_id,
-                   strerror(result));
+                   std::strerror(rc));
       return false;
     }
 
@@ -87,15 +87,11 @@ public:
         return false;
       CPU_SET(core_id, &cpuset);
     }
-
-    pthread_t thread = pthread_self();
-    int result = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-
-    if (result != 0) {
-      SPDLOG_ERROR("Failed to pin thread to cores: {}", strerror(result));
+    const int rc = applyMask(pthread_self(), cpuset);
+    if (rc != 0) {
+      SPDLOG_ERROR("Failed to pin thread to cores: {}", std::strerror(rc));
       return false;
     }
-
     SPDLOG_DEBUG("Thread pinned to {} cores", core_ids.size());
     return true;
 #else
@@ -125,63 +121,99 @@ public:
     return cores;
   }
 
-  static int getNumCores() { return std::thread::hardware_concurrency(); }
-
-  // Get current CPU core (may change if not pinned)
-  static int getCurrentCore() {
-#ifdef __linux__
-    return sched_getcpu();
-#else
-    return -1;
-#endif
+  // First line of a sysfs cpu-list file such as
+  // /sys/devices/system/cpu/isolated; empty if the file is missing or empty.
+  static std::string readCpuList(const char *path) {
+    std::ifstream f(path);
+    std::string line;
+    if (f)
+      std::getline(f, line);
+    return line;
   }
 
-  static void checkIsolated(int core_id) {
-    if (core_id < 0)
-      return;
-#ifdef __linux__
-    std::ifstream f("/sys/devices/system/cpu/isolated");
-    if (!f) {
-      SPDLOG_WARN("bench_cpu={}: cannot read /sys/devices/system/cpu/isolated",
-                  core_id);
-      return;
-    }
-    std::string line;
-    std::getline(f, line);
-    if (line.empty()) {
-      SPDLOG_WARN("bench_cpu={}: no CPUs are isolated (isolcpus not set)",
-                  core_id);
-      return;
-    }
-    bool found = false;
-    std::istringstream ss(line);
+  // Whether `cpu` is in a kernel cpu-list string ("0-3,8,10-11"). Tokens that
+  // do not start with a digit (blank entries, a trailing newline) are skipped
+  // rather than handed to std::stoi, which would throw on them.
+  static bool cpuListContains(const std::string &list, int cpu) {
+    std::istringstream ss(list);
     std::string token;
     while (std::getline(ss, token, ',')) {
-      auto dash = token.find('-');
-      if (dash == std::string::npos) {
-        if (std::stoi(token) == core_id) {
-          found = true;
-          break;
-        }
-      } else {
-        int lo = std::stoi(token.substr(0, dash));
-        int hi = std::stoi(token.substr(dash + 1));
-        if (core_id >= lo && core_id <= hi) {
-          found = true;
-          break;
-        }
-      }
+      if (token.empty() || token.front() < '0' || token.front() > '9')
+        continue;
+      const auto dash = token.find('-');
+      const int lo = std::stoi(token.substr(0, dash));
+      const int hi =
+          dash == std::string::npos ? lo : std::stoi(token.substr(dash + 1));
+      if (cpu >= lo && cpu <= hi)
+        return true;
     }
-    if (!found)
-      SPDLOG_WARN("bench_cpu={} is NOT in isolated CPU set ({}); "
-                  "scheduler noise may inflate latency",
-                  core_id, line);
-    else
-      SPDLOG_INFO("bench_cpu={} is isolated ({})", core_id, line);
-#else
-    SPDLOG_WARN("CPU isolation check not supported on this platform");
-#endif
+    return false;
   }
+
+#ifdef __linux__
+  // Housekeeping CPUs: every configured CPU that is in neither `isolated` nor
+  // `nohz_full`. If that leaves nothing (every CPU isolated), falls back to all
+  // CPUs. Returns false only when the CPU count is unknown.
+  static bool housekeepingCpuSet(cpu_set_t &cpuset) {
+    CPU_ZERO(&cpuset);
+    const std::string isolated =
+        readCpuList("/sys/devices/system/cpu/isolated");
+    const std::string nohz_full =
+        readCpuList("/sys/devices/system/cpu/nohz_full");
+    long cpu_count = sysconf(_SC_NPROCESSORS_CONF);
+    if (cpu_count <= 0 || cpu_count > CPU_SETSIZE)
+      cpu_count = CPU_SETSIZE;
+    for (int cpu = 0; cpu < cpu_count; ++cpu) {
+      if (!cpuListContains(isolated, cpu) && !cpuListContains(nohz_full, cpu))
+        CPU_SET(cpu, &cpuset);
+    }
+    if (CPU_COUNT(&cpuset) > 0)
+      return true;
+
+    for (int cpu = 0; cpu < cpu_count; ++cpu)
+      CPU_SET(cpu, &cpuset);
+    return cpu_count > 0;
+  }
+
+  // Pin `thread` (not necessarily the caller) to `core_id`, or - when core_id
+  // is negative or that pin fails - to the housekeeping CPUs.
+  // pinned_to_requested (optional out): set true ONLY when the requested core
+  // was actually pinned - false on the housekeeping fallback or when no core
+  // was requested. Callers gate RT/busy-poll on it: a fallback core is shared,
+  // so it must NOT run an RT spinner. The bool return still reports whether
+  // the thread was pinned *somewhere* (fallback included).
+  static bool pinThreadOrHousekeeping(pthread_t thread, int core_id,
+                                      const char *thread_name,
+                                      bool *pinned_to_requested = nullptr) {
+    if (pinned_to_requested)
+      *pinned_to_requested = false;
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    if (core_id >= 0 && validCore(core_id)) {
+      CPU_SET(core_id, &cpuset);
+      const int rc = applyMask(thread, cpuset);
+      if (rc == 0) {
+        SPDLOG_DEBUG("{} pinned to CPU {}", thread_name, core_id);
+        if (pinned_to_requested)
+          *pinned_to_requested = true;
+        return true;
+      }
+      SPDLOG_WARN("{} failed to pin to CPU {}: {}", thread_name, core_id,
+                  std::strerror(rc));
+    }
+
+    if (!housekeepingCpuSet(cpuset))
+      return false;
+    const int rc = applyMask(thread, cpuset);
+    if (rc != 0) {
+      SPDLOG_WARN("{} failed to pin to housekeeping CPUs: {}", thread_name,
+                  std::strerror(rc));
+      return false;
+    }
+    SPDLOG_DEBUG("{} pinned to housekeeping CPUs", thread_name);
+    return true;
+  }
+#endif
 
 private:
 #ifdef __linux__
@@ -196,6 +228,11 @@ private:
       return false;
     }
     return true;
+  }
+
+  // pthread_setaffinity_np's error code (0 on success); callers log it.
+  static int applyMask(pthread_t thread, const cpu_set_t &cpuset) {
+    return pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   }
 #endif
 };
