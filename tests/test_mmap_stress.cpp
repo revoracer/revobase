@@ -42,7 +42,7 @@ TEST_CASE_METHOD(StressTestFixture, "MmapBuffer stress tests",
     // Create many mappings
     for (int i = 0; i < num_mappings; i++) {
       std::string path = getTestPath("stress_" + std::to_string(i) + ".mmap");
-      std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+      std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
       addresses.push_back(addr);
 
       // Write unique pattern
@@ -68,7 +68,7 @@ TEST_CASE_METHOD(StressTestFixture, "MmapBuffer stress tests",
     const std::size_t size = 1024 * 1024; // 1MB
 
     for (int cycle = 0; cycle < 1000; cycle++) {
-      std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+      std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
 
       // Write and verify
       char *data = reinterpret_cast<char *>(addr);
@@ -84,7 +84,7 @@ TEST_CASE_METHOD(StressTestFixture, "MmapBuffer stress tests",
     const std::string path = getTestPath("multithread.mmap");
     const std::size_t size = 10 * 1024 * 1024; // 10MB
 
-    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
     std::atomic<int> *counters = reinterpret_cast<std::atomic<int> *>(addr);
 
     const int num_counters = size / sizeof(std::atomic<int>);
@@ -130,7 +130,8 @@ TEST_CASE_METHOD(StressTestFixture, "Page fault stress test",
   const std::string path = getTestPath("pagefault.mmap");
 
   SECTION("Touch every segment") {
-    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, true);
+    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(
+        path, size, true, {.populate = true, .lock_pages = true});
     char *data = reinterpret_cast<char *>(addr);
 
     revobase::TscTimer::calibrate();

@@ -40,8 +40,8 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
       Catch::Benchmark::Chronometer meter) {
     std::string path = getTestPath("bench_4k.mmap");
     meter.measure([&] {
-      std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, small_size, true, true);
+      std::uintptr_t addr = MmapBuffer::loadMmapBuffer(
+          path, small_size, true, {.populate = true, .lock_pages = true});
       MmapBuffer::releaseMmapBuffer(addr, small_size, true, MsyncMode::NONE);
       return addr;
     });
@@ -53,7 +53,7 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
     std::string path = getTestPath("bench_4k_lazy.mmap");
     meter.measure([&] {
       std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, small_size, true, false);
+          MmapBuffer::loadMmapBuffer(path, small_size, true, {});
       MmapBuffer::releaseMmapBuffer(addr, small_size, false, MsyncMode::NONE);
       return addr;
     });
@@ -64,8 +64,8 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
       Catch::Benchmark::Chronometer meter) {
     std::string path = getTestPath("bench_1m.mmap");
     meter.measure([&] {
-      std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, medium_size, true, true);
+      std::uintptr_t addr = MmapBuffer::loadMmapBuffer(
+          path, medium_size, true, {.populate = true, .lock_pages = true});
       MmapBuffer::releaseMmapBuffer(addr, medium_size, true, MsyncMode::NONE);
       return addr;
     });
@@ -76,8 +76,8 @@ TEST_CASE_METHOD(PerfTestFixture, "MmapBuffer performance benchmarks",
       Catch::Benchmark::Chronometer meter) {
     std::string path = getTestPath("bench_100m.mmap");
     meter.measure([&] {
-      std::uintptr_t addr =
-          MmapBuffer::loadMmapBuffer(path, large_size, true, true);
+      std::uintptr_t addr = MmapBuffer::loadMmapBuffer(
+          path, large_size, true, {.populate = true, .lock_pages = true});
       MmapBuffer::releaseMmapBuffer(addr, large_size, true, MsyncMode::NONE);
       return addr;
     });
@@ -90,7 +90,7 @@ TEST_CASE_METHOD(PerfTestFixture, "Memory access latency",
   const std::size_t size = 1024 * 1024; // 1MB
   const std::string path = getTestPath("latency.mmap");
 
-  std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+  std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
   volatile char *data = reinterpret_cast<volatile char *>(addr);
 
   BENCHMARK_ADVANCED("Sequential read (cache-hot)")(
@@ -139,8 +139,7 @@ TEST_CASE_METHOD(PerfTestFixture, "IPC throughput",
     char data[1024 * 1024 - 16]; // Leave room for atomics
   };
 
-  std::uintptr_t addr =
-      MmapBuffer::loadMmapBuffer(path, buffer_size, true, false);
+  std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, buffer_size, true, {});
   RingBuffer *ring = reinterpret_cast<RingBuffer *>(addr);
 
   BENCHMARK_ADVANCED("Single-producer single-consumer (1M messages)")(

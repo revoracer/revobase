@@ -47,7 +47,7 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer basic functionality",
   const std::string path = getTestPath("basic_test.mmap");
 
   SECTION("Create and map new file for writing") {
-    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+    std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
     REQUIRE(addr != 0);
 
     // Write some data
@@ -64,14 +64,14 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer basic functionality",
   SECTION("Read existing file") {
     // First create a file with data
     std::uintptr_t write_addr =
-        MmapBuffer::loadMmapBuffer(path, size, true, false);
+        MmapBuffer::loadMmapBuffer(path, size, true, {});
     char *write_data = reinterpret_cast<char *>(write_addr);
     std::strcpy(write_data, "Test Data");
     MmapBuffer::releaseMmapBuffer(write_addr, size, false, MsyncMode::NONE);
 
     // Now open for reading
     std::uintptr_t read_addr =
-        MmapBuffer::loadMmapBuffer(path, size, false, false);
+        MmapBuffer::loadMmapBuffer(path, size, false, {});
     REQUIRE(read_addr != 0);
 
     const char *read_data = reinterpret_cast<const char *>(read_addr);
@@ -84,11 +84,11 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer basic functionality",
   SECTION("Read missing file does not create it") {
     const std::string missing_path = getTestPath("missing_basic.mmap");
 
+    REQUIRE_THROWS_AS(MmapBuffer::loadMmapBuffer(missing_path, size, false, {}),
+                      revobase::os::MmapError);
     REQUIRE_THROWS_AS(
-        MmapBuffer::loadMmapBuffer(missing_path, size, false, false),
-        revobase::os::MmapError);
-    REQUIRE_THROWS_AS(
-        MmapBuffer::loadMmapBuffer(missing_path, size, false, true),
+        MmapBuffer::loadMmapBuffer(missing_path, size, false,
+                                   {.populate = true, .lock_pages = true}),
         revobase::os::MmapError);
     REQUIRE_FALSE(fs::exists(missing_path));
   }
@@ -97,9 +97,8 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer basic functionality",
     const std::string short_path = getTestPath("short_basic.mmap");
     std::ofstream(short_path).put('x');
 
-    REQUIRE_THROWS_AS(
-        MmapBuffer::loadMmapBuffer(short_path, size, false, false),
-        revobase::os::MmapError);
+    REQUIRE_THROWS_AS(MmapBuffer::loadMmapBuffer(short_path, size, false, {}),
+                      revobase::os::MmapError);
   }
 
   SECTION("Multiple processes can share memory") {
@@ -108,12 +107,12 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer basic functionality",
 
     // Appender process
     std::uintptr_t write_addr =
-        MmapBuffer::loadMmapBuffer(shared_path, size, true, false);
+        MmapBuffer::loadMmapBuffer(shared_path, size, true, {});
     std::strcpy(reinterpret_cast<char *>(write_addr), test_string);
 
     // Cursor process (same process, different mapping)
     std::uintptr_t read_addr =
-        MmapBuffer::loadMmapBuffer(shared_path, size, false, false);
+        MmapBuffer::loadMmapBuffer(shared_path, size, false, {});
 
     REQUIRE(std::strcmp(reinterpret_cast<const char *>(read_addr),
                         test_string) == 0);
@@ -133,7 +132,7 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer basic functionality",
            " bytes). Run: ulimit -l unlimited");
     }
     std::uintptr_t addr =
-        MmapBuffer::loadMmapBuffer(large_path, large_size, true, false);
+        MmapBuffer::loadMmapBuffer(large_path, large_size, true, {});
     REQUIRE(addr != 0);
     // Verify we can write to it
     char *data = reinterpret_cast<char *>(addr);
@@ -151,9 +150,9 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer error handling",
   const std::size_t size = 4096;
 
   SECTION("Invalid path throws exception") {
-    REQUIRE_THROWS_AS(MmapBuffer::loadMmapBuffer("/invalid/path/file.mmap",
-                                                 size, true, false),
-                      revobase::os::MmapError);
+    REQUIRE_THROWS_AS(
+        MmapBuffer::loadMmapBuffer("/invalid/path/file.mmap", size, true, {}),
+        revobase::os::MmapError);
   }
 
   SECTION("Release null buffer returns false") {
@@ -167,8 +166,7 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer existing read-only mappings",
   const std::size_t size = 4096;
   const std::string path = getTestPath("readonly.mmap");
 
-  std::uintptr_t write_addr =
-      MmapBuffer::loadMmapBuffer(path, size, true, false);
+  std::uintptr_t write_addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
   std::strcpy(reinterpret_cast<char *>(write_addr), "Read-only data");
   REQUIRE(
       MmapBuffer::releaseMmapBuffer(write_addr, size, false, MsyncMode::NONE));
@@ -218,7 +216,7 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer lazy vs eager loading",
       // comparable when both reads land on the same core.
       revobase::system::ScopedCpuPin pin(0);
       start = revobase::TscTimer::now_cycles_begin();
-      addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+      addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
       end = revobase::TscTimer::now_cycles_end();
     }
     const auto lazy_duration = revobase::TscTimer::delta_ns(start, end);
@@ -239,7 +237,8 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer lazy vs eager loading",
       // See "Lazy loading" above: pinned so begin/end read the same core.
       revobase::system::ScopedCpuPin pin(0);
       start = revobase::TscTimer::now_cycles_begin();
-      addr = MmapBuffer::loadMmapBuffer(path, size, true, true);
+      addr = MmapBuffer::loadMmapBuffer(path, size, true,
+                                        {.populate = true, .lock_pages = true});
       end = revobase::TscTimer::now_cycles_end();
     }
     const auto eager_duration = revobase::TscTimer::delta_ns(start, end);
@@ -253,7 +252,7 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer lazy vs eager loading",
 #ifdef __linux__
     // mincore() reads the page tables directly, so unlike touching the
     // memory and hoping, it actually distinguishes "already resident" from
-    // "faulted in just now by this check". loadMmapBuffer's prefault path
+    // "faulted in just now by this check". loadMmapBuffer's lock_pages path
     // mlock()s these pages on Linux (and throws if that fails), so there is
     // no eviction race between the load above and this check - no reliance
     // on counting faults, which would be noisy on shared CI runners.
@@ -277,12 +276,81 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer lazy vs eager loading",
   }
 }
 
+#ifdef __linux__
+namespace {
+// VmLck from /proc/self/status, in kB.
+std::size_t lockedKb() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.rfind("VmLck:", 0) == 0)
+      return std::stoul(line.substr(6));
+  }
+  return 0;
+}
+
+bool allResident(std::uintptr_t addr, std::size_t size) {
+  const long sc_page = ::sysconf(_SC_PAGESIZE);
+  const std::size_t page_size =
+      sc_page > 0 ? static_cast<std::size_t>(sc_page) : 4096;
+  std::vector<unsigned char> resident((size + page_size - 1) / page_size);
+  if (mincore(reinterpret_cast<void *>(addr), size, resident.data()) != 0)
+    return false;
+  for (unsigned char r : resident) {
+    if ((r & 1) == 0)
+      return false;
+  }
+  return true;
+}
+} // namespace
+
+TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer populate and lock are separate",
+                 "[mmap][loading]") {
+  const std::size_t size = 1024 * 1024; // 1MB
+  const std::size_t size_kb = size / 1024;
+  const std::string path = getTestPath("populate_lock.mmap");
+
+  SECTION("populate without lock_pages populates but does not lock") {
+    const std::size_t before = lockedKb();
+    std::uintptr_t addr =
+        MmapBuffer::loadMmapBuffer(path, size, true, {.populate = true});
+    CHECK(allResident(addr, size));
+    CHECK(lockedKb() == before);
+    REQUIRE(MmapBuffer::releaseMmapBuffer(addr, size, false, MsyncMode::NONE));
+  }
+
+  SECTION("lock_pages alone populates and locks") {
+    const std::size_t before = lockedKb();
+    std::uintptr_t addr =
+        MmapBuffer::loadMmapBuffer(path, size, true, {.lock_pages = true});
+    CHECK(allResident(addr, size));
+    CHECK(lockedKb() >= before + size_kb);
+    REQUIRE(MmapBuffer::releaseMmapBuffer(addr, size, true, MsyncMode::NONE));
+    CHECK(lockedKb() == before);
+  }
+
+  SECTION("read-only prepare can lock after populating") {
+    std::uintptr_t write_addr = MmapBuffer::loadMmapBuffer(path, size, true);
+    REQUIRE(MmapBuffer::releaseMmapBuffer(write_addr, size, false,
+                                          MsyncMode::NONE));
+
+    const std::size_t before = lockedKb();
+    std::uintptr_t addr = MmapBuffer::loadExistingReadOnlyMmapBuffer(
+        path, size, {.populate_read = true, .lock_pages = true});
+    CHECK(allResident(addr, size));
+    CHECK(lockedKb() >= before + size_kb);
+    REQUIRE(MmapBuffer::releaseMmapBuffer(addr, size, true, MsyncMode::NONE));
+    CHECK(lockedKb() == before);
+  }
+}
+#endif
+
 TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer alignment and cache-line testing",
                  "[mmap][alignment]") {
   const std::size_t size = 4096;
   const std::string path = getTestPath("alignment.mmap");
 
-  std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, false);
+  std::uintptr_t addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
 
   SECTION("Memory is page-aligned") {
     // mmap should return page-aligned addresses
@@ -311,16 +379,13 @@ TEST_CASE_METHOD(MmapTestFixture, "MmapBuffer concurrent access",
   const std::string path = getTestPath("concurrent.mmap");
 
   // Create and initialize
-  std::uintptr_t write_addr =
-      MmapBuffer::loadMmapBuffer(path, size, true, false);
+  std::uintptr_t write_addr = MmapBuffer::loadMmapBuffer(path, size, true, {});
   std::atomic<int> *counter = reinterpret_cast<std::atomic<int> *>(write_addr);
   counter->store(0);
 
   // Open multiple read mappings
-  std::uintptr_t read_addr1 =
-      MmapBuffer::loadMmapBuffer(path, size, false, false);
-  std::uintptr_t read_addr2 =
-      MmapBuffer::loadMmapBuffer(path, size, false, false);
+  std::uintptr_t read_addr1 = MmapBuffer::loadMmapBuffer(path, size, false, {});
+  std::uintptr_t read_addr2 = MmapBuffer::loadMmapBuffer(path, size, false, {});
 
   // Increment from write mapping
   counter->fetch_add(1);
