@@ -34,7 +34,9 @@ namespace os {
 
 std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
                                           std::size_t size, bool is_writing,
-                                          bool prefault, bool zero_new_file) {
+                                          MmapLoadOptions options) {
+  // mlock faults every page in, so locking always means populating too.
+  const bool populate = options.populate || options.lock_pages;
   // Only writers create/resize files, so only writers need the pre-open
   // existence + size check (st/file_exists feed the is_writing branches
   // below). For readers this stat() is a wasted syscall on every slow load.
@@ -101,7 +103,7 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
   // Setup mmap flags
   int prot = is_writing ? (PROT_READ | PROT_WRITE) : PROT_READ;
   int flags = MAP_SHARED;
-  if (prefault) {
+  if (populate) {
 #if IS_LINUX
     // Prefault all pages immediately as best-effort
     flags |= MAP_POPULATE;
@@ -120,7 +122,7 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
                     " (" + std::string(strerror(err)) + ")");
   }
 
-  if (prefault) {
+  if (populate) {
 #if IS_LINUX
     // Advise kernel about access pattern
     // MADV_SEQUENTIAL: For stream/log files (sequential access)
@@ -149,7 +151,7 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
     }
 #endif
     // Lock pages in RAM to prevent swapping
-    if (mlock(buffer, size) != 0) {
+    if (options.lock_pages && mlock(buffer, size) != 0) {
       int lock_err = errno;
 #if IS_LINUX
       munmap(buffer, size);
@@ -175,7 +177,7 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
     // caller that only settles ownership after this returns must skip the
     // memset to avoid clobbering a concurrent writer that mapped the
     // just-created file (see the zero_new_file note in MmapBuffer.h).
-    if (is_writing && !file_exists && zero_new_file) {
+    if (is_writing && !file_exists && options.zero_new_file) {
       // Zero-fill the entire region for new files
       std::memset(buffer, 0, size);
     } else {
@@ -197,7 +199,10 @@ std::uintptr_t MmapBuffer::loadMmapBuffer(const std::string &path,
   }
 
   SPDLOG_TRACE("mapped {} - {} - {} - {} bytes", path, is_writing ? "rw" : "r",
-               prefault ? "locked" : "lazy", size);
+               options.lock_pages ? "locked"
+               : populate         ? "populated"
+                                  : "lazy",
+               size);
 
   return reinterpret_cast<std::uintptr_t>(buffer);
 }
@@ -270,18 +275,26 @@ void MmapBuffer::prepareReadOnlyMmapBuffer(const std::string &path,
     throw MmapError("MADV_POPULATE_READ is unsupported for: " + path);
   }
 #endif
+
+  // After the populate, so mlock finds the pages already present.
+  if (options.lock_pages && mlock(buffer, size) != 0) {
+    int err = errno;
+    throw MmapError("mlock failed: " + path + " errno: " + std::to_string(err) +
+                    " (" + std::string(strerror(err)) + ")" +
+                    " - check ulimit -l");
+  }
 }
 
 bool MmapBuffer::releaseMmapBuffer(std::uintptr_t address, std::size_t size,
-                                   bool prefault, MsyncMode msync_mode) {
+                                   bool locked, MsyncMode msync_mode) {
   void *buffer = reinterpret_cast<void *>(address);
   if (buffer == nullptr) {
     SPDLOG_ERROR("Attempted to release null buffer");
     return false;
   }
-  if (prefault) {
-    // If the buffer was prefaulted, that means we have pin the pages in RAM
-    // preventing the OS from swapping them out. Now we'd release that pin,
+  if (locked) {
+    // The pages were pinned in RAM, preventing the OS from swapping them
+    // out. Now we'd release that pin,
     // allowing the kernel to reclaim the physical pages under memory pressure.
     if (munlock(buffer, size) != 0) {
       SPDLOG_ERROR("munlock failed: {}", strerror(errno));
